@@ -1,6 +1,6 @@
 {
-  "name": "FLUX HabitPro",
-  "short_name": "FLUX",
+  "name": "FLUX Habit",
+  "short_name": "FLUX HABITS",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
