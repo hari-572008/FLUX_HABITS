@@ -1,3 +1,4 @@
+<!-- FLUX Improved Edition: reminders, timed deadlines, priorities, subtasks, today plan -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1709,6 +1710,32 @@ html[data-theme="light"] .flux-notif-main-row,html[data-theme="light"] .flux-not
 html,body{max-width:100%;overflow-x:hidden}
 .wrap,.flux-app-shell,.flux-main,.mainpanel{max-width:100%;min-width:0}
 </style>
+
+<style id="flux-v2-enhancements">
+/* FLUX v2: small, non-invasive additions */
+.flux-v2-form{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}
+.flux-v2-form .full{grid-column:1/-1}
+.flux-v2-form label{display:flex;flex-direction:column;gap:6px}
+.flux-v2-form small{opacity:.65}
+.flux-v2-form input,.flux-v2-form select{min-height:40px}
+.flux-reminder-badge,.flux-priority-badge,.flux-subtask-badge{font-size:.72rem;border:1px solid var(--line,#2b3940);padding:4px 7px;border-radius:999px;white-space:nowrap}
+.flux-reminder-badge{color:var(--cyan,#72e6ff)}
+.flux-priority-high{color:var(--red,#ff6b6b)}
+.flux-priority-medium{color:var(--orange,#ffb45c)}
+.flux-priority-low{opacity:.7}
+.flux-task-tools{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:9px}
+.flux-subtasks{margin:10px 0 0 42px;padding:10px;border-left:2px solid var(--line,#2b3940)}
+.flux-subtask-row{display:flex;gap:8px;align-items:center;padding:6px 0}
+.flux-subtask-row span{flex:1}
+.flux-subtask-done{text-decoration:line-through;opacity:.55}
+.flux-mini{font-size:.75rem;padding:5px 8px}
+.flux-v2-section{margin-top:12px}
+.flux-next-card{margin-top:12px}
+@media(max-width:650px){
+  .flux-v2-form{grid-template-columns:1fr}
+  .flux-v2-form .full{grid-column:auto}
+}
+</style>
 </head>
 
 <style id="flux-theme-fix">
@@ -2488,8 +2515,30 @@ body:not(.dark-ui) .flux-stat-card{background:linear-gradient(145deg,#fff,#f7f9f
       </div>
       <div class="field-label">Category</div>
       <div class="cat-picker" id="addCatPicker"></div>
-      <div class="field-label">Repeats on</div>
+      <div class="field-label">Frequency</div>
+      <select id="fluxHabitFrequency" class="flux-frequency-select" aria-label="Habit frequency">
+        <option value="daily">Every day</option>
+        <option value="3x">3 days per week</option>
+        <option value="4x">4 days per week</option>
+        <option value="custom">Specific days</option>
+      </select>
+      <div class="field-label">Repeats on <small id="fluxFrequencyHint" style="opacity:.65"></small></div>
       <div class="day-picker" id="addDayPicker"></div>
+<!-- FLUX v2 additions -->
+<div id="fluxV2HabitFields" class="flux-v2-form" aria-label="Habit scheduling options">
+  <label>
+    <span>Reminder time</span>
+    <input id="fluxHabitReminder" type="time">
+    <small>Optional · reminds you on scheduled days</small>
+  </label>
+  <label>
+    <span>Completion deadline</span>
+    <input id="fluxHabitDeadline" type="time">
+    <small>Optional · used as the habit's daily time limit</small>
+  </label>
+</div>
+
+
     </div>
 
     <div class="tabs">
@@ -4764,6 +4813,439 @@ document.getElementById('shareReportBtn')?.addEventListener('click', shareReport
   syncSimpleStats();
   setInterval(syncSimpleStats,1000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden)syncSimpleStats();});
+})();
+</script>
+
+<script id="flux-v2-engine">
+(function(){
+  'use strict';
+
+  const V2_NOTIF_KEY='flux_v2_reminders_v1';
+
+  function esc(v){
+    if(typeof escapeHtml==='function') return escapeHtml(String(v??''));
+    const d=document.createElement('div'); d.textContent=String(v??''); return d.innerHTML;
+  }
+  function timeLabel(v){
+    if(!v) return '';
+    const [h,m]=v.split(':').map(Number);
+    if(Number.isNaN(h)||Number.isNaN(m)) return v;
+    const ap=h>=12?'PM':'AM', hh=(h%12)||12;
+    return `${hh}:${String(m).padStart(2,'0')} ${ap}`;
+  }
+  function dateTimeLabel(v){
+    if(!v) return '';
+    const d=new Date(v);
+    if(Number.isNaN(d.getTime())) return v;
+    return d.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
+  }
+  function reminderState(){
+    try{return JSON.parse(localStorage.getItem(V2_NOTIF_KEY)||'{}')}catch(e){return {}}
+  }
+  function saveReminderState(x){try{localStorage.setItem(V2_NOTIF_KEY,JSON.stringify(x))}catch(e){}}
+
+
+  /* ---------- Simple weekly frequency presets ---------- */
+  function setFrequencyPreset(){
+    const sel=document.getElementById('fluxHabitFrequency');
+    const hint=document.getElementById('fluxFrequencyHint');
+    if(!sel) return;
+    const v=sel.value;
+    if(v==='daily'){
+      addSelectedDays=new Set(DAY_ORDER);
+      if(hint) hint.textContent='· every day';
+    }else if(v==='3x'){
+      addSelectedDays=new Set(DAY_ORDER.slice(0,3));
+      if(hint) hint.textContent='· choose exactly 3 days';
+    }else if(v==='4x'){
+      addSelectedDays=new Set(DAY_ORDER.slice(0,4));
+      if(hint) hint.textContent='· choose exactly 4 days';
+    }else{
+      if(hint) hint.textContent='· choose your days';
+    }
+    const el=document.getElementById('addDayPicker');
+    if(el){
+      const rerender=()=>{
+        renderDayPicker(el,addSelectedDays,()=>{
+          /* If the preset is 3x/4x, keep the selection within the requested count. */
+          const f=document.getElementById('fluxHabitFrequency')?.value;
+          const max=f==='3x'?3:f==='4x'?4:null;
+          if(max && addSelectedDays.size>max){
+            addSelectedDays.delete([...addSelectedDays][addSelectedDays.size-1]);
+          }
+          rerender();
+        });
+      };
+      rerender();
+    }
+  }
+
+  function initFrequencyControl(){
+    const sel=document.getElementById('fluxHabitFrequency');
+    if(!sel || sel.dataset.v2Ready) return;
+    sel.dataset.v2Ready='1';
+    sel.addEventListener('change',setFrequencyPreset);
+    setFrequencyPreset();
+  }
+
+  /* ---------- Habit creation: capture the Add button before the old handler ---------- */
+  function addEnhancedHabit(){
+    const input=document.getElementById('habitInput');
+    const name=(input?.value||'').trim();
+    if(!name || typeof habits==='undefined') return;
+
+    const reminder=document.getElementById('fluxHabitReminder')?.value||'';
+    const deadline=document.getElementById('fluxHabitDeadline')?.value||'';
+    const frequency=document.getElementById('fluxHabitFrequency')?.value||'daily';
+    const required=frequency==='3x'?3:frequency==='4x'?4:null;
+    if(required && addSelectedDays.size!==required){
+      alert(`Choose exactly ${required} days for this habit.`);
+      return;
+    }
+
+    habits.push({
+      id:'h_'+Date.now()+'_'+Math.random().toString(36).slice(2,7),
+      name,
+      days:(typeof addSelectedDays!=='undefined' && addSelectedDays.size)?[...addSelectedDays]:[...DAY_ORDER],
+      frequency,
+      weeklyTarget:required || (frequency==='daily'?7:addSelectedDays.size),
+      categoryId:(typeof addSelectedCat!=='undefined'?addSelectedCat:'general'),
+      completions:{},
+      createdAt:Date.now(),
+      reminder,
+      dailyDeadline:deadline,
+      goalType:'check',
+      archived:false
+    });
+
+    if(typeof saveHabits==='function') saveHabits();
+    if(input) input.value='';
+    const r=document.getElementById('fluxHabitReminder'); if(r) r.value='';
+    const dl=document.getElementById('fluxHabitDeadline'); if(dl) dl.value='';
+    const f=document.getElementById('fluxHabitFrequency'); if(f) f.value='daily';
+    initFrequencyControl();
+    if(typeof renderAll==='function') renderAll();
+    decorateHabitCards();
+    renderTodayPlan();
+  }
+
+  const addBtn=document.getElementById('addBtn');
+  if(addBtn){
+    addBtn.addEventListener('click',function(e){
+      e.stopImmediatePropagation();
+      addEnhancedHabit();
+    },true);
+  }
+  const habitInput=document.getElementById('habitInput');
+  if(habitInput){
+    habitInput.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        addEnhancedHabit();
+      }
+    },true);
+  }
+
+  /* ---------- Habit badges + simple reminder editing ---------- */
+  function decorateHabitCards(){
+    if(typeof habits==='undefined') return;
+    document.querySelectorAll('#habitList .habit,#manageList .habit').forEach(card=>{
+      const btn=card.querySelector('[data-id]');
+      const edit=card.querySelector('[data-edit]');
+      const id=btn?.dataset.id || edit?.dataset.edit;
+      const h=habits.find(x=>x.id===id);
+      if(!h) return;
+
+      card.querySelectorAll('.flux-v2-meta').forEach(x=>x.remove());
+      const meta=document.createElement('div');
+      meta.className='flux-v2-meta flux-task-tools';
+      let html='';
+      if(h.reminder) html+=`<span class="flux-reminder-badge">⏰ ${timeLabel(h.reminder)}</span>`;
+      if(h.dailyDeadline) html+=`<span class="flux-subtask-badge">⌛ ${timeLabel(h.dailyDeadline)}</span>`;
+      if(html) meta.innerHTML=html;
+      if(html) card.appendChild(meta);
+
+      if(card.closest('#manageList') && !card.querySelector('[data-flux-reminder-edit]')){
+        const tools=document.createElement('div');
+        tools.className='flux-task-tools';
+        tools.innerHTML=`<button class="quick-btn flux-mini" type="button" data-flux-reminder-edit="${esc(h.id)}">⏰ Reminder</button>
+                         <button class="quick-btn flux-mini" type="button" data-flux-deadline-edit="${esc(h.id)}">⌛ Deadline</button>`;
+        card.appendChild(tools);
+      }
+    });
+  }
+
+  document.addEventListener('click',function(e){
+    const rb=e.target.closest('[data-flux-reminder-edit]');
+    if(rb){
+      const h=(typeof habits!=='undefined')?habits.find(x=>x.id===rb.dataset.fluxReminderEdit):null;
+      if(!h) return;
+      const v=prompt('Reminder time (HH:MM). Leave blank to remove.',h.reminder||'');
+      if(v===null) return;
+      h.reminder=/^\d{2}:\d{2}$/.test(v)?v:'';
+      if(typeof saveHabits==='function') saveHabits();
+      if(typeof renderAll==='function') renderAll();
+      setTimeout(decorateHabitCards,30);
+      return;
+    }
+    const db=e.target.closest('[data-flux-deadline-edit]');
+    if(db){
+      const h=(typeof habits!=='undefined')?habits.find(x=>x.id===db.dataset.fluxDeadlineEdit):null;
+      if(!h) return;
+      const v=prompt('Daily completion deadline (HH:MM). Leave blank to remove.',h.dailyDeadline||'');
+      if(v===null) return;
+      h.dailyDeadline=/^\d{2}:\d{2}$/.test(v)?v:'';
+      if(typeof saveHabits==='function') saveHabits();
+      if(typeof renderAll==='function') renderAll();
+      setTimeout(decorateHabitCards,30);
+    }
+  });
+
+  /* ---------- Tasks: richer but intentionally simple ---------- */
+  function ensureTaskFields(){
+    const row=document.querySelector('#main-tasks .add-box .add-row');
+    if(!row || document.getElementById('fluxTaskPriority')) return;
+    const deadline=document.getElementById('taskDeadlineInput');
+    if(deadline){
+      deadline.type='datetime-local';
+      deadline.title='Task deadline date + time';
+      deadline.setAttribute('aria-label','Task deadline date and time');
+    }
+    const fields=document.createElement('div');
+    fields.className='flux-v2-form';
+    fields.innerHTML=`
+      <label><span>Reminder</span><input id="fluxTaskReminder" type="datetime-local"><small>Optional</small></label>
+      <label><span>Priority</span><select id="fluxTaskPriority"><option value="high">🔴 High</option><option value="medium" selected>🟠 Medium</option><option value="low">⚪ Low</option></select></label>`;
+    row.parentElement.appendChild(fields);
+  }
+
+  function addEnhancedTask(){
+    const input=document.getElementById('taskInput');
+    const text=(input?.value||'').trim();
+    if(!text || typeof tasks==='undefined') return;
+    const deadline=document.getElementById('taskDeadlineInput')?.value||'';
+    const reminder=document.getElementById('fluxTaskReminder')?.value||'';
+    const priority=document.getElementById('fluxTaskPriority')?.value||'medium';
+
+    tasks.unshift({
+      id:typeof taskId==='function'?taskId():'t'+Date.now(),
+      text, done:false, createdAt:Date.now(), deadline, reminder, priority,
+      subtasks:[]
+    });
+    if(input) input.value='';
+    const d=document.getElementById('taskDeadlineInput'); if(d) d.value='';
+    const r=document.getElementById('fluxTaskReminder'); if(r) r.value='';
+    if(typeof saveTasks==='function') saveTasks();
+    renderEnhancedTasks();
+    if(typeof deadlineWarning==='function') deadlineWarning();
+  }
+
+  function renderEnhancedTasks(){
+    const list=document.getElementById('taskList');
+    if(!list || typeof tasks==='undefined') return;
+
+    const sorted=[...tasks].sort((a,b)=>{
+      if(a.done!==b.done) return a.done?1:-1;
+      const order={high:0,medium:1,low:2};
+      if((order[a.priority]??1)!==(order[b.priority]??1)) return (order[a.priority]??1)-(order[b.priority]??1);
+      const da=a.deadline?new Date(a.deadline).getTime():Infinity;
+      const db=b.deadline?new Date(b.deadline).getTime():Infinity;
+      return da-db || (b.createdAt-a.createdAt);
+    });
+
+    if(!sorted.length){
+      list.innerHTML='<div class="empty hud"><span class="big">NO TASKS</span>Add a task with an optional deadline, reminder and subtasks.</div>';
+    }else{
+      list.innerHTML=sorted.map(t=>{
+        const subs=Array.isArray(t.subtasks)?t.subtasks:[];
+        const doneSubs=subs.filter(x=>x.done).length;
+        const p=t.priority||'medium';
+        const deadline=t.deadline?dateTimeLabel(t.deadline):'';
+        const reminder=t.reminder?dateTimeLabel(t.reminder):'';
+        return `<div class="habit hud task-item">
+          <div class="habit-top">
+            <button class="check ${t.done?'done':''}" data-v2-task-check="${esc(t.id)}">✓</button>
+            <div class="habit-name ${t.done?'done-text':''}">${esc(t.text)}</div>
+            <span class="flux-priority-badge flux-priority-${p}">${p.toUpperCase()}</span>
+            ${deadline?`<span class="deadline-badge">📅 ${esc(deadline)}</span>`:''}
+            <button class="icon-btn del" data-v2-task-del="${esc(t.id)}">✕</button>
+          </div>
+          <div class="flux-task-tools">
+            ${reminder?`<span class="flux-reminder-badge">⏰ ${esc(reminder)}</span>`:''}
+            <span class="flux-subtask-badge">☑ ${doneSubs}/${subs.length} subtasks</span>
+            <button class="quick-btn flux-mini" data-v2-add-sub="${esc(t.id)}">＋ Subtask</button>
+            ${deadline?`<button class="quick-btn flux-mini" data-v2-edit-deadline="${esc(t.id)}">📅 Edit</button>`:''}
+          </div>
+          <div class="flux-subtasks">
+            ${subs.length?subs.map(st=>`<div class="flux-subtask-row">
+              <button class="check ${st.done?'done':''}" data-v2-sub-check="${esc(t.id)}|${esc(st.id)}">✓</button>
+              <span class="${st.done?'flux-subtask-done':''}">${esc(st.text)}</span>
+              <button class="icon-btn del" data-v2-sub-del="${esc(t.id)}|${esc(st.id)}">✕</button>
+            </div>`).join(''):'<small style="opacity:.55">No subtasks yet.</small>'}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    const doneCount=tasks.filter(t=>t.done).length;
+    const foot=document.getElementById('taskFoot');
+    if(foot) foot.innerHTML=`<span>${doneCount} of ${tasks.length} done</span>${doneCount?'<button id="v2ClearTasks" type="button">Clear completed</button>':''}`;
+
+    list.querySelectorAll('[data-v2-task-check]').forEach(b=>b.onclick=()=>{
+      const t=tasks.find(x=>x.id===b.dataset.v2TaskCheck); if(!t)return;
+      t.done=!t.done; if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    list.querySelectorAll('[data-v2-task-del]').forEach(b=>b.onclick=()=>{
+      tasks=tasks.filter(x=>x.id!==b.dataset.v2TaskDel); if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    list.querySelectorAll('[data-v2-add-sub]').forEach(b=>b.onclick=()=>{
+      const t=tasks.find(x=>x.id===b.dataset.v2AddSub); if(!t)return;
+      const text=prompt('Subtask name'); if(!text?.trim())return;
+      t.subtasks=Array.isArray(t.subtasks)?t.subtasks:[];
+      t.subtasks.push({id:'s'+Date.now()+Math.random().toString(36).slice(2,5),text:text.trim(),done:false});
+      if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    list.querySelectorAll('[data-v2-sub-check]').forEach(b=>b.onclick=()=>{
+      const [tid,sid]=b.dataset.v2SubCheck.split('|');
+      const t=tasks.find(x=>x.id===tid); const st=t?.subtasks?.find(x=>x.id===sid); if(!st)return;
+      st.done=!st.done; if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    list.querySelectorAll('[data-v2-sub-del]').forEach(b=>b.onclick=()=>{
+      const [tid,sid]=b.dataset.v2SubDel;
+      const t=tasks.find(x=>x.id===tid); if(!t)return;
+      t.subtasks=(t.subtasks||[]).filter(x=>x.id!==sid); if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    list.querySelectorAll('[data-v2-edit-deadline]').forEach(b=>b.onclick=()=>{
+      const t=tasks.find(x=>x.id===b.dataset.v2EditDeadline); if(!t)return;
+      const v=prompt('Deadline: YYYY-MM-DDTHH:MM',t.deadline||''); if(v===null)return;
+      t.deadline=v; if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+    document.getElementById('v2ClearTasks')?.addEventListener('click',()=>{
+      tasks=tasks.filter(t=>!t.done); if(typeof saveTasks==='function')saveTasks(); renderEnhancedTasks();
+    });
+  }
+
+  const addTaskBtn=document.getElementById('addTaskBtn');
+  if(addTaskBtn){
+    addTaskBtn.addEventListener('click',function(e){
+      e.stopImmediatePropagation();
+      addEnhancedTask();
+    },true);
+  }
+  const taskInput=document.getElementById('taskInput');
+  if(taskInput){
+    taskInput.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){
+        e.preventDefault(); e.stopImmediatePropagation(); addEnhancedTask();
+      }
+    },true);
+  }
+
+  /* ---------- Reminders: habit reminder, task reminder and task deadline ---------- */
+  async function notify(title,body){
+    if(typeof Notification==='undefined' || Notification.permission!=='granted') return false;
+    try{
+      if(navigator.serviceWorker?.ready){
+        const reg=await navigator.serviceWorker.ready;
+        if(reg?.showNotification){ await reg.showNotification(title,{body,icon:'./icons/icon-192.png',badge:'./icons/icon-192.png'}); return true; }
+      }
+    }catch(e){}
+    try{new Notification(title,{body,icon:'./icons/icon-192.png'});return true}catch(e){return false}
+  }
+
+  async function checkV2Reminders(){
+    if(typeof Notification==='undefined' || Notification.permission!=='granted') return;
+    const now=new Date(), hh=String(now.getHours()).padStart(2,'0'), mm=String(now.getMinutes()).padStart(2,'0');
+    const nowHM=hh+':'+mm, day=(typeof todayStr==='function'?todayStr(now):now.toISOString().slice(0,10));
+    const state=reminderState();
+
+    if(typeof habits!=='undefined'){
+      for(const h of habits){
+        if(!h.reminder || h.reminder!==nowHM || !h.days?.includes(typeof dayAbbrOf==='function'?dayAbbrOf(now):'')) continue;
+        const key='habit:'+h.id+':'+day;
+        if(state[key] || h.completions?.[day]) continue;
+        if(await notify('FLUX — '+h.name,'Habit reminder: it is time to complete this habit.')) state[key]=1;
+      }
+    }
+
+    if(typeof tasks!=='undefined'){
+      for(const t of tasks){
+        if(t.done) continue;
+        if(t.reminder){
+          const d=new Date(t.reminder);
+          if(!Number.isNaN(d.getTime()) && d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth() && d.getDate()===now.getDate() && d.getHours()===now.getHours() && d.getMinutes()===now.getMinutes()){
+            const key='taskrem:'+t.id+':'+t.reminder;
+            if(!state[key] && await notify('FLUX — Task Reminder',t.text)) state[key]=1;
+          }
+        }
+        if(t.deadline){
+          const d=new Date(t.deadline);
+          if(!Number.isNaN(d.getTime()) && d.getFullYear()===now.getFullYear() && d.getMonth()===now.getMonth() && d.getDate()===now.getDate() && d.getHours()===now.getHours() && d.getMinutes()===now.getMinutes()){
+            const key='deadline:'+t.id+':'+t.deadline;
+            if(!state[key] && await notify('FLUX — Deadline',`Deadline now: ${t.text}`)) state[key]=1;
+          }
+        }
+      }
+    }
+    saveReminderState(state);
+  }
+
+  /* ---------- Simple Today plan ---------- */
+  function renderTodayPlan(){
+    const card=document.getElementById('fluxV2TodayCard'), list=document.getElementById('fluxV2TodayPlan'), count=document.getElementById('fluxV2PlanCount');
+    if(!card||!list||typeof habits==='undefined')return;
+    const now=new Date(), day=typeof todayStr==='function'?todayStr(now):now.toISOString().slice(0,10);
+    const hs=habits.filter(h=>typeof isScheduled==='function'&&isScheduled(h,now));
+    const ts=(typeof tasks!=='undefined')?tasks.filter(t=>!t.done):[];
+    if(!hs.length&&!ts.length){card.style.display='none';return}
+    card.style.display='';
+    const items=[
+      ...hs.map(h=>({time:h.reminder||h.dailyDeadline||'',type:'Habit',name:h.name,done:!!h.completions?.[day]})),
+      ...ts.map(t=>({time:t.deadline||t.reminder||'',type:'Task',name:t.text,done:t.done}))
+    ].sort((a,b)=>String(a.time).localeCompare(String(b.time)));
+    count.textContent=items.length+' items';
+    list.innerHTML=items.slice(0,8).map(x=>`<div class="flux-task-tools"><span>${x.done?'✓':'○'}</span><strong>${esc(x.name)}</strong><small style="margin-left:auto">${x.time?esc(x.time.includes('T')?dateTimeLabel(x.time):timeLabel(x.time)):''}</small></div>`).join('');
+  }
+
+  function patchTaskUI(){
+    ensureTaskFields();
+    const row=document.querySelector('#main-tasks .add-box .add-row');
+    if(row){
+      const old=document.getElementById('taskDeadlineInput');
+      if(old) old.type='datetime-local';
+    }
+    renderEnhancedTasks();
+  }
+
+  /* Wait until the existing FLUX engine has initialized its data. */
+  setTimeout(()=>{
+    initFrequencyControl();
+    ensureTaskFields();
+    decorateHabitCards();
+    renderEnhancedTasks();
+    renderTodayPlan();
+    checkV2Reminders();
+  },500);
+
+  setInterval(()=>{
+    decorateHabitCards();
+    renderTodayPlan();
+    checkV2Reminders();
+  },30000);
+
+  document.addEventListener('visibilitychange',()=>{
+    if(!document.hidden){ checkV2Reminders(); renderTodayPlan(); }
+  });
+
+  /* Preserve compatibility with the existing render cycle by decorating after common UI actions. */
+  const oldRenderAll=window.renderAll;
+  if(typeof oldRenderAll==='function'){
+    window.renderAll=function(){
+      oldRenderAll.apply(this,arguments);
+      setTimeout(()=>{decorateHabitCards();renderTodayPlan()},20);
+    };
+  }
 })();
 </script>
 </body>
