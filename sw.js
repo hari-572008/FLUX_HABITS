@@ -1,15 +1,15 @@
 // FLUX HabitPro service worker
 // Bump CACHE_VERSION whenever index.html (or other cached assets) change,
 // so returning users get the new version instead of a stale cached copy.
-const CACHE_VERSION = 'flux-v1';
+const CACHE_VERSION = 'flux-v2';
 const PRECACHE_URLS = [
   './',
   './index.html',
   './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-  './icons/icon-maskable-192.png',
-  './icons/icon-maskable-512.png'
+  './icon-192.png',
+  './icon-512.png',
+  './icon-maskable-192.png',
+  './icon-maskable-512.png'
 ];
 
 self.addEventListener('install', (event) => {
